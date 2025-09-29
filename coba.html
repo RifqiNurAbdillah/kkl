@@ -1,0 +1,196 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Interactive Bali Map — KKL</title>
+  <!-- Leaflet CSS (no integrity attribute to avoid blocking if the hash mismatches) -->
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  <style>
+    html,body,#map { height:100%; margin:0; padding:0; }
+    body{ font-family:system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', Arial; }
+    .controls{ position:absolute; top:12px; right:12px; z-index:1000; background:rgba(255,255,255,0.95); border-radius:8px; box-shadow:0 6px 18px rgba(0,0,0,0.12); padding:12px; width:320px; }
+    .controls h3{ margin:0 0 8px 0; font-size:16px; }
+    .place-list{ max-height:240px; overflow:auto; padding:0; margin:0; list-style:none; }
+    .place-list li{ padding:8px 10px; border-radius:6px; cursor:pointer; margin-bottom:6px; background:#f7f7f7; }
+    .place-list li:hover{ background:#eef6ff; }
+    .status{ font-size:12px; color:#666; margin-top:8px; }
+
+    /* simple red pin using divIcon */
+    .red-pin{ width:18px; height:18px; background:#e74c3c; display:block; border-radius:50% 50% 50% 0; transform:rotate(-45deg); position:relative; box-shadow:0 1px 2px rgba(0,0,0,0.4); }
+    .red-pin:after{ content:''; width:12px; height:12px; margin:3px 0 0 3px; background:white; display:block; border-radius:50%; }
+
+    @media (max-width:600px){ .controls{ width:90%; left:5%; right:5%; } }
+  </style>
+</head>
+<body>
+  <div id="map"></div>
+  <div class="controls" id="controls">
+    <h3>Tempat Kunjungan (Bali)</h3>
+    <ul class="place-list" id="placelist"></ul>
+    <div class="status" id="status">Menunggu pemuatan peta...</div>
+    <small style="display:block;margin-top:8px;color:#888">Klik nama tempat untuk memusatkan peta. Klik marker untuk melihat nama. Jika beberapa tempat tidak ditemukan otomatis, klik peta untuk menambah marker manual.</small>
+  </div>
+
+  <!--
+    Script logic:
+    - We dynamically load Leaflet (script) to avoid "L is not defined" errors when the library fails to load synchronously.
+    - The initialization code (initMap) runs only after Leaflet has loaded.
+    - A fallback CDN (jsdelivr) is attempted if the first CDN fails.
+  -->
+  <script>
+    // List of places to display
+    const places = [
+      'Krisna Sunset Road, Bali',
+      'Balai Diklat Industri Denpasar, Bali',
+      'Pantai Padang Galak, Bali',
+      'Pusat Oleh-oleh Dewata, Bali',
+      'Pantai Pandawa, Bali',
+      'Garuda Wisnu Kencana, Bali',
+      'Resto Jimbaran, Bali',
+      'Pura Ulun Danu Bratan, Bali',
+      'Joger Luwus, Bali'
+    ];
+
+    // initMap will be called once Leaflet (L) is available
+    function initMap(){
+      try{
+        // if L is still not available, abort
+        if(!window.L){
+          document.getElementById('status').textContent = 'Library peta (Leaflet) tidak tersedia.';
+          console.error('Leaflet (L) is not available after loading.');
+          return;
+        }
+
+        const map = L.map('map', { zoomControl:true }).setView([-8.409518,115.188919], 9);
+
+        L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+          maxZoom: 19,
+          attribution: '&copy; OpenStreetMap contributors'
+        }).addTo(map);
+
+        const placelistEl = document.getElementById('placelist');
+        const statusEl = document.getElementById('status');
+
+        // use L.divIcon factory (safer than extending class in some setups)
+        const redPinIcon = L.divIcon({ className: '', html: '<div class="red-pin"></div>', iconSize: [18,18], iconAnchor:[9,18] });
+
+        const markers = [];
+        const bounds = L.latLngBounds();
+
+        // helper: geocode using Nominatim (OpenStreetMap)
+        async function geocode(place){
+          const q = encodeURIComponent(place + '');
+          const url = `https://nominatim.openstreetmap.org/search?q=${q}&format=json&limit=1&addressdetails=0`;
+          try{
+            const resp = await fetch(url, { headers: { 'Accept-Language': 'id,en' } });
+            if(!resp.ok) throw new Error('Gagal ambil geocode: ' + resp.status);
+            const data = await resp.json();
+            if(data && data.length>0) return { lat: parseFloat(data[0].lat), lon: parseFloat(data[0].lon) };
+          }catch(e){ console.warn('Geocode error', e); }
+          return null;
+        }
+
+        async function addPlaces(){
+          statusEl.textContent = 'Mencari koordinat tempat...';
+
+          for(const p of places){
+            const li = document.createElement('li');
+            li.textContent = p;
+            placelistEl.appendChild(li);
+
+            // ketika diklik, pusatkan ke marker (nanti diisi)
+            li.addEventListener('click', () => {
+              const m = markers.find(x => x.meta && x.meta.name === p);
+              if(m) map.setView(m.getLatLng(), 15, { animate:true });
+            });
+
+            // geocode
+            const pos = await geocode(p + ' Bali Indonesia');
+            if(pos){
+              const mk = L.marker([pos.lat, pos.lon], { icon: redPinIcon }).addTo(map);
+              mk.bindPopup(`<strong>${p}</strong>`);
+              mk.meta = { name: p };
+              markers.push(mk);
+              bounds.extend(L.latLng(pos.lat, pos.lon));
+              li.style.background = '#fff';
+            } else {
+              // fallback: tambahkan sebagai teks tanpa marker
+              li.style.opacity = 0.6;
+              li.title = 'Koordinat tidak ditemukan, klik peta untuk menambah marker manual setelah memusatkan lokasi.';
+              li.addEventListener('click', ()=>{ alert('Koordinat untuk "'+p+'" tidak ditemukan otomatis. Kamu bisa menambah marker manual dengan klik peta.'); });
+            }
+          }
+
+          if(markers.length>0){
+            map.fitBounds(bounds.pad(0.2));
+            statusEl.textContent = `Selesai: ${markers.length} lokasi tampil. Klik marker untuk detail.`;
+          } else {
+            statusEl.textContent = 'Tidak ada lokasi berhasil dipetakan. Coba cek koneksi atau edit daftar lokasi.';
+          }
+
+          // aktifkan klik peta untuk menambahkan marker manual
+          map.on('click', function(e){
+            const name = prompt('Masukkan nama tempat untuk marker baru (kosong = batal):');
+            if(name){
+              const mk = L.marker(e.latlng, { icon: redPinIcon }).addTo(map);
+              mk.bindPopup(`<strong>${name}</strong>`).openPopup();
+              markers.push(mk);
+              bounds.extend(e.latlng);
+              map.fitBounds(bounds.pad(0.2));
+
+              // tambahkan ke list
+              const li = document.createElement('li'); li.textContent = name; placelistEl.appendChild(li);
+              li.addEventListener('click', ()=> map.setView(mk.getLatLng(),15));
+            }
+          });
+        }
+
+        addPlaces();
+
+      }catch(err){
+        console.error('initMap error', err);
+        document.getElementById('status').textContent = 'Terjadi kesalahan saat inisialisasi peta. Lihat console untuk detail.';
+      }
+    }
+
+    // function to dynamically load Leaflet script and call initMap when ready
+    function loadLeafletThenInit(){
+      // If Leaflet is already present (rare), just init
+      if(window.L){
+        initMap();
+        return;
+      }
+
+      const primary = 'https://unpkg.com/leaflet@1.9.4/dist/leaflet.js';
+      const fallback = 'https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.js';
+
+      const script = document.createElement('script');
+      script.src = primary;
+      script.async = true;
+      script.onload = function(){
+        console.log('Leaflet loaded from primary CDN');
+        initMap();
+      };
+      script.onerror = function(){
+        console.warn('Failed to load Leaflet from primary CDN, trying fallback...');
+        const s2 = document.createElement('script');
+        s2.src = fallback;
+        s2.async = true;
+        s2.onload = function(){ console.log('Leaflet loaded from fallback CDN'); initMap(); };
+        s2.onerror = function(){ console.error('Failed to load Leaflet from both CDNs'); document.getElementById('status').textContent = 'Gagal memuat library peta (Leaflet). Periksa koneksi.'; };
+        document.head.appendChild(s2);
+      };
+
+      document.head.appendChild(script);
+    }
+
+    // start when DOM is ready
+    if(document.readyState === 'loading'){
+      document.addEventListener('DOMContentLoaded', loadLeafletThenInit);
+    } else {
+      loadLeafletThenInit();
+    }
+  </script>
+</body>
+</html>
